@@ -117,51 +117,30 @@ lookup against `boards/`.
 
 ## Code changes beyond relocation
 
-Most of the work moves constants into a board file. Two sites need real code
-changes.
+Most board variance is a constant moved into a board file; three things are real
+code.
 
-**Syncboss SPI node becomes a `module_param`.** The loader hardcodes
-`find_dev(spi_bus, NULL, "spi0.0")` at `module/loader.c:676` and names `spi0.0`
-again in the `MODULE_PARM_DESC` at `module/loader.c:88`. The loader already
-exposes a long list of module params — `image`, `initrd`, `flush_rpmh`,
-`suspend_syncboss`, and others (`module/loader.c:67-89`) — so the syncboss node
-name joins them as a `charp` param defaulted from `QKX_SYNCBOSS_SPI`, and one
-loader source builds for both boards. The risk is low: the syncboss lookup fires
-only under `suspend_syncboss`, which is off by default and sits on the optional
-PM-suspend path.
+- **Syncboss SPI node becomes a `module_param`.** The loader took a hardcoded
+  `spi0.0`; it is now a `charp` param defaulted from `QKX_SYNCBOSS_SPI` (`spi0.0`
+  on seacliff, `spi1.0` on hollywood), so one loader source builds for both. The
+  risk is low: the lookup fires only under `suspend_syncboss`, which is off by
+  default and sits on the optional PM-suspend path.
+- **The RAM-end bound is derived, not hardcoded.** `secmap_ram()` in
+  `smmu_secmap.h` and the `ram_scan2` test assumed `0x380000000` — 12 GiB, Quest
+  Pro's population. They now take the RAM top from the running kernel
+  (`virt_to_phys(high_memory)`), correct on the 6 GiB Quest 2, with `pfn_valid()`
+  still backstopping the walk. For seacliff this is a genuine behaviour change —
+  the one point that is not a pure constant relocation — accepted because deriving
+  the bound is correct independent of how many boards the tree supports.
+- **`ion_secmap` builds from source.** The secure-range enumerator joins
+  `module/Makefile` with its ION/kgsl headers resolved through a `KSRC` variable
+  (and the stale prebuilt `ion_secmap.ko.off` is dropped), so the module is built
+  against — and matches — the connected headset's kernel rather than shipping as a
+  single-board binary.
 
-**The RAM-end bound is derived rather than hardcoded.** Two sites assume
-`0x380000000` — 12 GiB, Quest Pro's population:
-
-- `module/smmu_secmap.h:29`, in `secmap_ram()`: `pa >= 0x80000000ULL && pa < 0x380000000ULL`.
-- `tools/tests/ram_scan2/ram_scan2.c:15`: `end_pfn = PFN_DOWN(0x380000000ULL)`.
-
-Both should come from the kernel's own `memblock` / `max_pfn` instead of a
-literal. This is the actual end of RAM for any board, and it is the one constant
-that would be incorrect on a 6 GiB Quest 2 rather than merely misplaced. For
-seacliff this is a genuine behavior change — the single point in the refactor
-that is not a pure constant relocation — and it is accepted because deriving the
-bound is correct independent of how many boards the tree supports.
-
-## Hardcode inventory
-
-Every site that encodes a board fact today, and where it moves:
-
-| Site | Currently | Handling |
-|---|---|---|
-| `module/loader.c:676` (desc at `:88`) | syncboss node `spi0.0` | `module_param`, defaulted from `QKX_SYNCBOSS_SPI` |
-| `module/smmu_secmap.h:29` | RAM end `0x380000000` | derived from `memblock`/`max_pfn` (behavior change for seacliff) |
-| `tools/tests/ram_scan2/ram_scan2.c:15` | RAM end `0x380000000` | derived from `memblock`/`max_pfn` |
-| `qkx-install-package.sh:42`, `:21` | `[ "$MODEL" = seacliff ]`, `'Quest Pro (seacliff)'` | board probe + `boards/` lookup + `QKX_BOARD_LABEL` |
-| `qkx-uninstall.sh:26` | `[ "$MODEL" = seacliff ]` | board probe + `boards/` lookup |
-| `tools/build-system-package.py:34`, `tools/build-rom-package.py:26` | manifest `device` = `"Quest Pro (seacliff)"` | `QKX_BOARD_LABEL` |
-| `tools/build-turnkey-images.py:19` | `FirstTimeNuxSeacliff.apk` | `QKX_NUX_APK` |
-| `initramfs/init.sh:33`, `initramfs/ramtest-init.sh:33` | USB manufacturer `quest-pro-kexec` | `QKX_USB_MANUFACTURER` |
-| `qkx-install-package.sh` prep-time DT edits | qseecom `disabled`, splash + secure-display `no-map` | SoC-fixed on Kona; left as constants, mirrored into `QKX_DISABLE_NODES` / `QKX_NOMAP_NODES` as the extension point for a future non-Kona board (the `/memory` reg is Tier 2 — from capture) |
-| `module/loader.c:2`, `:1136`; `tools/prepare.py:2`, `:104` | "Quest Pro" wording | generalize text (cosmetic) |
-| `tools/disable-alt-updaters.py` | hardcoded author path `ROOT=Path('/home/yusuf/...')` | not a board fact — made a required `images` argument |
-
-The last two rows carry no board semantics. The "Quest Pro" strings are cosmetic
-and generalize. The `/home/yusuf/...` path in `disable-alt-updaters.py` was one
-contributor's local working directory, not a board fact; it is now passed as a
+Everything else is relocation: the `[ "$MODEL" = seacliff ]` guards and
+`"Quest Pro (seacliff)"` label in the install/uninstall and package scripts, the
+first-run APK, and the initramfs USB manufacturer all resolve through the board
+descriptor; the "Quest Pro" wording in the loader and `prepare.py` is generalised;
+and `disable-alt-updaters.py`'s hardcoded author path (not a board fact) becomes a
 required `images` argument.
