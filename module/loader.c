@@ -29,6 +29,7 @@
 #include <asm/sysreg.h>
 #include <asm/unaligned.h>
 #include <soc/qcom/scm.h>
+#include "core.h" /* Matching kernel's drivers/usb/dwc3; no guessed offsets. */
 
 #define QKX_LO 0x90000000ULL
 #define QKX_HI 0x93400000ULL
@@ -784,11 +785,27 @@ static int __maybe_unused qkx_execute(void)
 	}
 	/* Stop gadget traffic and controller Run/Stop without tearing down the
 	 * Qualcomm glue power domain. Full driver unbind hard-resets the board. */
-	qkx_phase(10, "suspending Android DWC3 gadget", false);
-	ret = suspend_dwc3_gadget(dev_get_drvdata(usb_core));
-	pr_emerg("quest_kexec: DWC3 gadget suspend returned %d\n", ret);
-	if (ret)
-		panic("quest_kexec: DWC3 gadget suspend failed (%d)", ret);
+	{
+		struct dwc3 *dwc = dev_get_drvdata(usb_core);
+		int in_lpm = atomic_read(&dwc->in_lpm);
+
+		pr_emerg("quest_kexec: DWC3 in_lpm=%d gadget_driver=%s\n",
+			in_lpm, dwc->gadget_driver ? "bound" : "none");
+		/* Qualcomm defines in_lpm as controller clocks off. The stock
+		 * gadget suspend callback starts with unguarded MMIO, which can
+		 * hang the CPU in charger-only/no-host operation. Already-low-power
+		 * hardware needs no further gadget stop; preserve its power domain.
+		 */
+		if (in_lpm) {
+			qkx_phase(10, "DWC3 already in low power; skipping gadget MMIO", false);
+		} else {
+			qkx_phase(10, "suspending Android DWC3 gadget", false);
+			ret = suspend_dwc3_gadget(dwc);
+			pr_emerg("quest_kexec: DWC3 gadget suspend returned %d\n", ret);
+			if (ret)
+				panic("quest_kexec: DWC3 gadget suspend failed (%d)", ret);
+		}
+	}
 	put_device(usb_core);
 	usb_core = NULL;
 

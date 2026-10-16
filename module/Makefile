@@ -10,6 +10,7 @@ obj-m += usb_log.o
 quest_kexec-y := loader.o transition.o
 # Without this define the module can only stage (execute=1 is refused).
 ccflags-y += -DQKX_ENABLE_EXPERIMENTAL_JUMP
+ccflags-y += -I$(srctree)/drivers/usb/dwc3
 else
 KDIR ?= $(error set KDIR to the built Android kernel output directory)
 LOCALVERSION ?=

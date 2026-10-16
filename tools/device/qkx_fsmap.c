@@ -84,6 +84,40 @@ static int do_alloc(const char *path, unsigned long long size)
 	return 0;
 }
 
+/* Extend an existing pinned file. Blocks already allocated keep their place,
+ * so maps of the old size stay valid; only new extents are appended. */
+static int do_grow(const char *path, unsigned long long size)
+{
+	struct stat st;
+	uint32_t pin = 1;
+	int fd;
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		return die("open");
+	if (fstat(fd, &st))
+		return die("fstat");
+	if (size <= (unsigned long long)st.st_size) {
+		fprintf(stderr, "qkx_fsmap: %s is already %llu bytes\n", path,
+			(unsigned long long)st.st_size);
+		return 1;
+	}
+	if (ioctl(fd, F2FS_IOC_SET_PIN_FILE, &pin))
+		return die("F2FS_IOC_SET_PIN_FILE");
+	if (fallocate(fd, 0, 0, (off_t)size))
+		return die("fallocate");
+	if (fsync(fd))
+		return die("fsync");
+	pin = 0;
+	if (!ioctl(fd, F2FS_IOC_GET_PIN_FILE, &pin) && pin) {
+		fprintf(stderr, "qkx_fsmap: %s reports %u pin/GC failures\n",
+			path, pin);
+		return 1;
+	}
+	close(fd);
+	return 0;
+}
+
 static int do_map(const char *path, unsigned long long unit)
 {
 	char buf[sizeof(struct fiemap) + MAX_EXTENTS * sizeof(struct fiemap_extent)];
@@ -159,6 +193,8 @@ int main(int argc, char **argv)
 {
 	if (argc == 4 && !strcmp(argv[1], "alloc"))
 		return do_alloc(argv[2], strtoull(argv[3], NULL, 0));
+	if (argc == 4 && !strcmp(argv[1], "grow"))
+		return do_grow(argv[2], strtoull(argv[3], NULL, 0));
 	if (argc == 3 && !strcmp(argv[1], "map"))
 		return do_map(argv[2], 1);
 	if (argc == 4 && !strcmp(argv[1], "mapdd")) {
@@ -172,6 +208,7 @@ int main(int argc, char **argv)
 	}
 
 	fprintf(stderr, "usage: qkx_fsmap alloc <path> <bytes>\n"
+			"       qkx_fsmap grow <path> <bytes>\n"
 			"       qkx_fsmap map <path>\n"
 			"       qkx_fsmap mapdd <path> <blocksize>\n");
 	return 1;
