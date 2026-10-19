@@ -8,6 +8,12 @@ ifneq ($(KERNELRELEASE),)
 obj-m += quest_kexec.o marker_read.o
 obj-m += usb_log.o
 obj-m += ion_secmap.o
+# Standalone read-only apps_smmu state dumper (Tier-1 diagnostic); self-contained,
+# no KSRC headers, independent of quest_kexec.ko.
+obj-m += smmu_dump.o
+# Standalone read-only stage-1 page-table walker for one CB (Tier-2 diagnostic);
+# refuses secure CBs, never reads leaf pages. Self-contained, independent of the loader.
+obj-m += smmu_ptwalk.o
 quest_kexec-y := loader.o transition.o
 # Without this define the module can only stage (execute=1 is refused).
 ccflags-y += -DQKX_ENABLE_EXPERIMENTAL_JUMP
