@@ -1181,6 +1181,15 @@ static int __maybe_unused qkx_execute(void)
 		(void *)lookup("dwc3_gadget_resume");
 	int (*rpmh_flush_fn)(const struct device *) =
 		(void *)lookup("rpmh_flush");
+	/* Optional diagnostic: if the CPU freeze ever aborts (a wake IRQ beating
+	 * the negative pm_abort_suspend margin seeded before machine_shutdown),
+	 * name the source before panicking. Use pm_get_active_wakeup_sources(),
+	 * which fills a buffer via scnprintf, rather than
+	 * pm_print_active_wakeup_sources(), which emits through pr_debug and is
+	 * silent on a production build. NULL-guarded at the call site,
+	 * so a missing symbol can never affect staging or the normal jump path. */
+	void (*get_wakeup_sources)(char *, size_t) =
+		(void *)lookup("pm_get_active_wakeup_sources");
 	struct device *gpu, *watchdog, *usb_core = NULL, *rpmh_dev = NULL;
 	struct device *syncboss = NULL, *qmp_dev = NULL;
 	struct task_struct *wakeup_suppressor = NULL;
@@ -1425,14 +1434,38 @@ static int __maybe_unused qkx_execute(void)
 	 * reenables it immediately before machine_shutdown(). */
 	hotplug_enable();
 	/* freeze_secondary_cpus() rechecks pm_wakeup_pending() per CPU; a late
-	 * wake IRQ during device shutdown would abort it and force a panic. */
+	 * wake IRQ during device shutdown would abort it and force a panic.
+	 * events_check_enabled=false kills the count-mismatch half of the check;
+	 * the other half is pm_abort_suspend>0, which pm_system_wakeup()'s
+	 * atomic_inc() can re-arm from a wake IRQ at any point across the per-CPU
+	 * freeze loop. A one-shot clear to 0 races that: freeze_secondary_cpus()
+	 * takes the secondaries down one at a time, so any IRQ landing mid-loop
+	 * trips the next check (the "native CPU shutdown failed" panic). A concurrent
+	 * suppressor kthread can't help here the way it does for freeze_processes,
+	 * because machine_shutdown() takes the other CPUs offline. Instead seed a
+	 * large negative margin (same value qkx_wakeup_suppressor uses): any
+	 * realistic number of wake-IRQ increments during the freeze stays <= 0, so
+	 * pm_wakeup_pending() keeps returning false. Past this point we either jump
+	 * (never return) or panic below, so the margin needs no later cleanup. */
 	WRITE_ONCE(*events_check_enabled, false);
-	atomic_set(qkx_pm_abort_suspend, 0);
+	atomic_set(qkx_pm_abort_suspend, -1000000);
 	qkx_phase(13, "calling native machine_shutdown", false);
 	shutdown_cpus();
 	qkx_phase(14, "native machine_shutdown returned", false);
-	if (num_online_cpus() != 1 || stuck())
+	if (num_online_cpus() != 1 || stuck()) {
+		/* Should not happen now the margin is seeded; if it ever does, name
+		 * the wake source that beat it so the next failure is diagnosable. */
+		pr_emerg("quest_kexec: CPU freeze failed: online=%u pm_abort_suspend=%d events_check_enabled=%d\n",
+			 num_online_cpus(), atomic_read(qkx_pm_abort_suspend),
+			 READ_ONCE(*events_check_enabled));
+		if (get_wakeup_sources) {
+			char wsbuf[256] = "";
+
+			get_wakeup_sources(wsbuf, sizeof(wsbuf));
+			pr_emerg("quest_kexec: %s\n", wsbuf);
+		}
 		panic("quest_kexec: native CPU shutdown failed");
+	}
 	if (rpmh_dev) {
 		int rpmh_ret;
 
