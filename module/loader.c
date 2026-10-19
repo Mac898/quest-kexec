@@ -33,7 +33,11 @@
 
 #define QKX_LO 0x90000000ULL
 #define QKX_HI 0x93400000ULL
-#define QKX_ENTRY 0x90080000ULL
+/* Entry = 2 MiB-aligned base (QKX_LO) + the Image's text_offset. Downstream
+ * Oculus 4.19 Images use text_offset 0x80000 (the default, giving the historical
+ * 0x90080000); a mainline arm64 Image declares text_offset 0 and is placed at
+ * QKX_LO. Driven by the kernel_text_offset module param below. */
+#define QKX_ENTRY (QKX_LO + kernel_text_offset)
 #define QKX_INITRD 0x93000000ULL
 #define QKX_DTB 0x93200000ULL
 /* Includes held allocations that land inside the destination window. */
@@ -66,6 +70,7 @@ static bool flush_rpmh;
 static bool suspend_syncboss;
 static bool disconnect_qmp;
 static char *syncboss_spi = "spi0.0";
+static unsigned long kernel_text_offset = 0x80000;
 module_param(image, charp, 0);
 module_param(initrd, charp, 0);
 module_param(dtb, charp, 0);
@@ -90,6 +95,8 @@ module_param(suspend_syncboss, bool, 0);
 MODULE_PARM_DESC(suspend_syncboss, "Suspend the syncboss MCU (see syncboss_spi) through its PM callback before kexec, stopping active GPI DMA");
 module_param(syncboss_spi, charp, 0);
 MODULE_PARM_DESC(syncboss_spi, "SPI device name of the syncboss MCU (board-specific: spi0.0 on seacliff, spi1.0 on hollywood)");
+module_param(kernel_text_offset, ulong, 0);
+MODULE_PARM_DESC(kernel_text_offset, "ARM64 Image text_offset; entry = 0x90000000 + this. Default 0x80000 (downstream Oculus 4.19). Pass 0 for a mainline Image whose header text_offset is 0. Must equal the Image header's text_offset.");
 module_param(disconnect_qmp, bool, 0);
 MODULE_PARM_DESC(disconnect_qmp, "Cleanly close Android AOP QMP channels and publish mcore LINK_DOWN before kexec");
 MODULE_PARM_DESC(core_hang_control, "0: untouched; 1: report secure core-hang registers; 2: clear enable bit");
@@ -1100,7 +1107,8 @@ static int __init qkx_init(void)
 	image_size = get_unaligned_le64(kh + 16);
 	flags = get_unaligned_le64(kh + 24);
 	ret = -EINVAL;
-	if (memcmp(kh + 56, "ARM\x64", 4) || get_unaligned_le64(kh + 8) != SZ_512K ||
+	if (memcmp(kh + 56, "ARM\x64", 4) || get_unaligned_le64(kh + 8) != kernel_text_offset ||
+	    kernel_text_offset >= QKX_INITRD - QKX_LO ||
 	    image_size < ksize || image_size > QKX_INITRD - QKX_ENTRY ||
 	    (flags & 1) || !(flags & 8) || ((flags & 6) != 0 && (flags & 6) != 2))
 		goto out;

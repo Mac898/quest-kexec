@@ -16,6 +16,16 @@ PARAMS="execute=1 preserve_watchdog=1 watchdog_recovery=0 core_hang_control=2 \
 flush_rpmh=1 suspend_syncboss=1 disconnect_qmp=0 phase_delay_ms=300 \
 syncboss_spi=$QKX_SYNCBOSS_SPI $*"
 
+# The loader places/enters the Image at QKX_LO + text_offset. A mainline Image
+# declares text_offset 0 (downstream Oculus 4.19 uses 0x80000). Pass the offset
+# through from the prepared manifest, but only when it differs from the 0x80000
+# default so the downstream insmod line is unchanged. An explicit
+# kernel_text_offset= in the extra args (above) still wins.
+if [ -f "$P/manifest.json" ] && [[ "$PARAMS" != *kernel_text_offset=* ]]; then
+	TEXT_OFFSET=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('text_offset',524288))" "$P/manifest.json" 2>/dev/null || echo 524288)
+	[ "$TEXT_OFFSET" = 524288 ] || PARAMS="$PARAMS kernel_text_offset=$TEXT_OFFSET"
+fi
+
 for f in "$MOD" "$MARKER" "$P/Image" "$P/initramfs" "$P/boot.dtb"; do
 	[ -f "$f" ] || { echo "missing $f"; exit 1; }
 done

@@ -100,7 +100,15 @@ def main():
         report.update(text_offset=offset, image_size=size, flags=flags,
                       image_file_size=len(kernel), replacement_kernel=str(a.kernel_image),
                       kernel_sha256=hashlib.sha256(kernel).hexdigest())
-    if report["text_offset"] != 0x80000 or report["image_size"] > 0x2F80000:
+    # Entry = QKX_LO (2 MiB-aligned base) + text_offset. Downstream Oculus 4.19
+    # Images declare text_offset 0x80000; a mainline arm64 Image declares 0. The
+    # loader places and enters at QKX_LO + text_offset; run.sh passes the offset
+    # on to the module when it is not the 0x80000 default.
+    QKX_LO, QKX_INITRD = 0x90000000, 0x93000000
+    text_offset = report["text_offset"]
+    if text_offset not in (0, 0x80000):
+        raise ValueError(f"unsupported text_offset {text_offset:#x} (expected 0 or 0x80000)")
+    if report["image_size"] > QKX_INITRD - (QKX_LO + text_offset):
         raise ValueError("image does not fit the Kona staging layout")
     initrd = a.initramfs.read_bytes() if a.initramfs else original
     dtb = a.live_dtb.read_bytes()
@@ -128,7 +136,7 @@ def main():
                           ("linux,initrd-end", 0x93000000 + len(initrd))):
         subprocess.run(["fdtput", "-t", "x", str(dtpath), "/chosen", name,
                         "0", f"{address:x}"], check=True)
-    report.update(kernel_address=0x90080000, initrd_address=0x93000000,
+    report.update(kernel_address=QKX_LO + text_offset, initrd_address=0x93000000,
                   dtb_address=0x93200000, initrd_size=len(initrd),
                   dtb_size=dtpath.stat().st_size, effective_cmdline=args,
                   replacement_initramfs=a.initramfs is not None,
